@@ -1,0 +1,12 @@
+{
+  "sourceDataset": "NASA LRO LOLA LDEM64_PA_pixel_202405 (Global 32ppd)",
+  "projection": "equirectangular",
+  "width": 11520,
+  "height": 5760,
+  "ppd": 32,
+  "resMetersEquator": 947.6,
+  "unitMeters": 1,
+  "minElevationM": -9109,
+  "maxElevationM": 10744,
+  "gridFile": "lunar-global-dem.bin"
+}

@@ -1,0 +1,56 @@
+{
+  "sourceDataset": "LDEM_80S_20MPP_ADJ.tiff",
+  "fullWidthPx": 30400,
+  "fullHeightPx": 30400,
+  "fullResMeters": 20.0,
+  "horizonGridFile": "lola-80s-100m.bin",
+  "horizonWidthPx": 6080,
+  "horizonHeightPx": 6080,
+  "horizonResMeters": 100,
+  "patches": {
+    "shackleton_rim": {
+      "file": "patch-shackleton_rim-20m.bin",
+      "centerLat": -89.45,
+      "centerLon": -137.3,
+      "col0": 14384,
+      "row0": 15563,
+      "width": 500,
+      "height": 500,
+      "resMeters": 20.0,
+      "unitMeters": 0.5
+    },
+    "shackleton_floor": {
+      "file": "patch-shackleton_floor-20m.bin",
+      "centerLat": -89.54,
+      "centerLon": 129.78,
+      "col0": 15486,
+      "row0": 15396,
+      "width": 500,
+      "height": 500,
+      "resMeters": 20.0,
+      "unitMeters": 0.5
+    },
+    "malapert_massif": {
+      "file": "patch-malapert_massif-20m.bin",
+      "centerLat": -86.04,
+      "centerLon": 2.7,
+      "col0": 15233,
+      "row0": 8950,
+      "width": 500,
+      "height": 500,
+      "resMeters": 20.0,
+      "unitMeters": 0.5
+    },
+    "de_gerlache": {
+      "file": "patch-de_gerlache-20m.bin",
+      "centerLat": -88.5,
+      "centerLon": -87.1,
+      "col0": 12679,
+      "row0": 14835,
+      "width": 500,
+      "height": 500,
+      "resMeters": 20.0,
+      "unitMeters": 0.5
+    }
+  }
+}

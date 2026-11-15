@@ -1,69 +1,403 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import React, { useCallback, useEffect, useState } from "react";
+import { LunarMissionReport } from "@/components/LunarMissionReport";
+import type { LunarMissionReportData, VerdictLabel } from "@/lib/lunarMissionReport";
+
+const QUICK_PRESETS = [
+  { label: "APOLLO 11 (0.67° N, 23.47° E)", lat: "0.67", lon: "23.47" },
+  { label: "APOLLO 17 (20.19° N, 30.77° E)", lat: "20.19", lon: "30.77" },
+  { label: "SHACKLETON RIDGE (-89.45°, -137.30°)", lat: "-89.45", lon: "-137.30" },
+  { label: "CHANG'E-4 FARSIDE (-45.45°, 177.58°)", lat: "-45.45", lon: "177.58" },
+];
+
+const WINDOW_OPTIONS = [7, 14, 21, 30] as const;
+
+interface HistoryEntry {
+  id: string;
+  lat: string;
+  lon: string;
+  landingDate: string;
+  windowDays: number;
+  verdict: VerdictLabel;
+}
+
+const HISTORY_STORAGE_KEY = "lunar-global-clps-history-v1";
+
+export default function HomePage() {
+  const [lat, setLat] = useState("0.67");
+  const [lon, setLon] = useState("23.47");
+  const [landingDate, setLandingDate] = useState("2026-11-15");
+  const [windowDays, setWindowDays] = useState<number>(14);
+
+  const [report, setReport] = useState<LunarMissionReportData | null>(null);
+  const [isStale, setIsStale] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [loadingStage, setLoadingStage] = useState<number>(1);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as HistoryEntry[];
+        if (Array.isArray(parsed)) setHistory(parsed.slice(0, 6));
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingStage(1);
+      return;
+    }
+    setLoadingStage(1);
+    const t1 = setTimeout(() => setLoadingStage(2), 350);
+    const t2 = setTimeout(() => setLoadingStage(3), 800);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [isLoading]);
+
+  const pushHistory = useCallback((entry: HistoryEntry) => {
+    setHistory((prev) => {
+      const filtered = prev.filter(
+        (item) =>
+          !(
+            item.lat === entry.lat &&
+            item.lon === entry.lon &&
+            item.landingDate === entry.landingDate &&
+            item.windowDays === entry.windowDays
+          ),
+      );
+      const next = [entry, ...filtered].slice(0, 6);
+      try {
+        window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
+  const fetchMissionReport = useCallback(
+    async (
+      targetLat: string,
+      targetLon: string,
+      targetDate: string,
+      targetWindow: number,
+    ) => {
+      setIsLoading(true);
+      setIsStale(false);
+      setErrorMsg(null);
+
+      try {
+        const response = await fetch("/api/mission-report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lat: Number(targetLat),
+            lon: Number(targetLon),
+            landingDate: targetDate,
+            windowDays: targetWindow,
+          }),
+        });
+
+        const payload = await response.json();
+        if (!response.ok || !payload.report) {
+          throw new Error(payload.error || "FAILED_TO_GENERATE_REPORT");
+        }
+
+        const nextReport = payload.report as LunarMissionReportData;
+        setReport(nextReport);
+
+        pushHistory({
+          id: `${targetLat}_${targetLon}_${targetDate}_${targetWindow}`,
+          lat: Number(targetLat).toFixed(2),
+          lon: Number(targetLon).toFixed(2),
+          landingDate: targetDate,
+          windowDays: targetWindow,
+          verdict: nextReport.verdict,
+        });
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : "UNKNOWN_ERROR");
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [pushHistory],
+  );
+
+  const markParamsDirty = () => {
+    if (report) setIsStale(true);
+    setErrorMsg(null);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    void fetchMissionReport(lat, lon, landingDate, windowDays);
+  };
+
+  const handlePreset = (presetLat: string, presetLon: string) => {
+    setLat(presetLat);
+    setLon(presetLon);
+    markParamsDirty();
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <main className="min-h-screen bg-[#050505] text-white py-6 px-4 sm:px-6">
+      <div className="max-w-[680px] mx-auto space-y-6">
+        {/* TOP MISSION CONTROL BAR */}
+        <section className="w-full border border-white bg-[#050505] p-4 sm:p-5">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-widest text-neutral-400 mb-1.5">
+                  LATITUDE (-90°..90°)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="-90"
+                  max="90"
+                  required
+                  value={lat}
+                  onChange={(e) => {
+                    setLat(e.target.value);
+                    markParamsDirty();
+                  }}
+                  className="w-full h-9 px-2.5 bg-[#0C0C0C] border border-white text-xs font-semibold tabular-nums text-white focus:outline-none rounded-[2px]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-widest text-neutral-400 mb-1.5">
+                  LONGITUDE (-180°..180°)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="-180"
+                  max="180"
+                  required
+                  value={lon}
+                  onChange={(e) => {
+                    setLon(e.target.value);
+                    markParamsDirty();
+                  }}
+                  className="w-full h-9 px-2.5 bg-[#0C0C0C] border border-white text-xs font-semibold tabular-nums text-white focus:outline-none rounded-[2px]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-widest text-neutral-400 mb-1.5">
+                  LANDING DATE (UTC)
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={landingDate}
+                  onChange={(e) => {
+                    setLandingDate(e.target.value);
+                    markParamsDirty();
+                  }}
+                  className="w-full h-9 px-2.5 bg-[#0C0C0C] border border-white text-xs font-semibold tabular-nums text-white focus:outline-none rounded-[2px] [color-scheme:dark]"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+              <div className="sm:col-span-7">
+                <span className="block text-[10px] font-semibold uppercase tracking-widest text-neutral-400 mb-1.5">
+                  WINDOW (CLPS LANDER)
+                </span>
+                <div className="grid grid-cols-4 h-9 border border-white rounded-[2px] overflow-hidden tabular-nums">
+                  {WINDOW_OPTIONS.map((days) => {
+                    const active = windowDays === days;
+                    return (
+                      <button
+                        key={days}
+                        type="button"
+                        onClick={() => {
+                          setWindowDays(days);
+                          markParamsDirty();
+                        }}
+                        className={`text-xs font-bold uppercase transition-colors border-r last:border-r-0 border-white/40 cursor-pointer ${
+                          active
+                            ? "bg-white text-[#050505]"
+                            : "bg-[#0C0C0C] text-white hover:bg-white/10"
+                        }`}
+                      >
+                        {days}D
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="sm:col-span-5">
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className={`w-full h-9 px-4 text-xs font-extrabold uppercase tracking-widest transition-all disabled:opacity-50 rounded-[2px] cursor-pointer ${
+                    isStale
+                      ? "bg-amber-300 text-[#050505] hover:bg-amber-200 ring-2 ring-amber-300/40"
+                      : "bg-white text-[#050505] hover:bg-neutral-200"
+                  }`}
+                >
+                  {isLoading ? "RUNNING..." : "GENERATE REPORT"}
+                </button>
+              </div>
+            </div>
+
+            {/* QUICK PRESETS */}
+            <div className="pt-3 border-t border-white/20 flex flex-wrap items-center gap-2 text-[11px] tabular-nums">
+              <span className="uppercase tracking-widest text-neutral-400 mr-1">
+                GLOBAL LANDING SITES:
+              </span>
+              {QUICK_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => handlePreset(preset.lat, preset.lon)}
+                  className="px-2.5 py-1 border border-white/45 bg-[#0C0C0C] hover:border-white text-white font-semibold uppercase tracking-wider rounded-[2px] transition-colors cursor-pointer"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+
+            {/* HISTORY */}
+            {history.length > 0 && (
+              <div className="pt-2.5 border-t border-white/15 flex flex-wrap items-center justify-between gap-2 text-[11px] tabular-nums">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="uppercase tracking-widest text-neutral-500 mr-1">
+                    LATEST SITES:
+                  </span>
+                  {history.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setLat(item.lat);
+                        setLon(item.lon);
+                        setLandingDate(item.landingDate);
+                        setWindowDays(item.windowDays);
+                        void fetchMissionReport(
+                          item.lat,
+                          item.lon,
+                          item.landingDate,
+                          item.windowDays,
+                        );
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2 py-0.5 border border-white/30 bg-[#0C0C0C] hover:border-white text-neutral-200 rounded-[2px] transition-colors cursor-pointer"
+                    >
+                      <span>
+                        {item.lat}°, {item.lon}° · {item.landingDate} ({item.windowDays}D · CLPS)
+                      </span>
+                      <span className="px-1 border border-white/50 text-[9px] font-bold text-white">
+                        {item.verdict}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHistory([]);
+                    try {
+                      window.localStorage.removeItem(HISTORY_STORAGE_KEY);
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                  className="text-[10px] uppercase tracking-widest text-neutral-400 hover:text-white underline cursor-pointer"
+                >
+                  CLEAR
+                </button>
+              </div>
+            )}
+          </form>
+        </section>
+
+        {/* ERROR BANNER */}
+        {errorMsg && (
+          <div className="w-full p-4 border border-white bg-[#0C0C0C] text-xs uppercase tracking-wider text-white">
+            ERROR: {errorMsg}
+          </div>
+        )}
+
+        {/* MODEL SIMULATION PROGRESS */}
+        {isLoading && (
+          <div className="w-full font-sans antialiased">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2 text-[11px] uppercase tracking-widest text-neutral-400 tabular-nums">
+              <span>NASA GLOBAL LOLA LDEM_64 + DE440 EPHEMERIS</span>
+              <span>COMPUTING TELEMETRY PIPELINE...</span>
+            </div>
+
+            <div className="border border-white bg-[#050505] p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold uppercase tracking-widest text-white">
+                  CLPS SIMULATION ACTIVE
+                </span>
+                <span className="text-[11px] uppercase tracking-wider text-neutral-400 tabular-nums">
+                  {Number(lat).toFixed(2)}°, {Number(lon).toFixed(2)}° · {windowDays}D
+                </span>
+              </div>
+
+              <div className="w-full h-1.5 bg-[#0C0C0C] border border-white/40 overflow-hidden">
+                <div
+                  className="h-full bg-white transition-all duration-500 ease-out"
+                  style={{
+                    width: loadingStage === 1 ? "35%" : loadingStage === 2 ? "72%" : "92%",
+                  }}
+                />
+              </div>
+
+              <div className="space-y-2.5 text-xs uppercase tracking-wider tabular-nums">
+                <div className="flex items-center justify-between text-white">
+                  <span>01 · SAMPLING GLOBAL LDEM_64 ELEVATION &amp; SLOPE</span>
+                  <span className="text-[10px] border border-white px-1.5 py-0.5 bg-[#0C0C0C]">
+                    {loadingStage > 1 ? "DONE" : "ACTIVE"}
+                  </span>
+                </div>
+
+                <div
+                  className={`flex items-center justify-between transition-opacity duration-300 ${
+                    loadingStage >= 2 ? "text-white opacity-100" : "text-neutral-500 opacity-50"
+                  }`}
+                >
+                  <span>02 · SPHERICAL RAYCASTING &amp; DE440 EPHEMERIS</span>
+                  <span className="text-[10px] border border-white/50 px-1.5 py-0.5 bg-[#0C0C0C]">
+                    {loadingStage > 2 ? "DONE" : loadingStage === 2 ? "ACTIVE" : "QUEUED"}
+                  </span>
+                </div>
+
+                <div
+                  className={`flex items-center justify-between transition-opacity duration-300 ${
+                    loadingStage >= 3 ? "text-white opacity-100" : "text-neutral-500 opacity-50"
+                  }`}
+                >
+                  <span>03 · EVALUATING CLPS LANDER CONSTRAINTS</span>
+                  <span className="text-[10px] border border-white/50 px-1.5 py-0.5 bg-[#0C0C0C]">
+                    {loadingStage === 3 ? "ACTIVE" : "QUEUED"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* REPORT OUTPUT */}
+        {!isLoading && report && (
+          <LunarMissionReport report={report} isLoading={isLoading} isStale={isStale} />
+        )}
+      </div>
+    </main>
   );
 }
