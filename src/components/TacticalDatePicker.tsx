@@ -138,7 +138,6 @@ export function TacticalDatePicker({ value, onChange }: TacticalDatePickerProps)
   }, [viewYear, viewMonth]);
 
   const handleManualInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Разрешаем только цифры и дефисы; при вставке 8 цифр подряд форматируем в YYYY-MM-DD
     let cleaned = e.target.value.replace(/[^\d-]/g, "");
     if (/^\d{8}$/.test(cleaned)) {
       cleaned = `${cleaned.slice(0, 4)}-${cleaned.slice(4, 6)}-${cleaned.slice(6, 8)}`;
