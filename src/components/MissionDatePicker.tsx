@@ -36,12 +36,22 @@ function formatIsoDate(year: number, month: number, day: number): string {
   return `${year}-${mm}-${dd}`;
 }
 
+function getTodayUtcIso(): string {
+  const now = new Date();
+  return formatIsoDate(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+}
+
 export function MissionDatePicker({ value, onChange }: MissionDatePickerProps) {
   const parsed = useMemo(() => parseIsoDate(value), [value]);
   const [open, setOpen] = useState(false);
   const [viewYear, setViewYear] = useState(parsed.year);
   const [viewMonth, setViewMonth] = useState(parsed.month);
+  const [todayIso, setTodayIso] = useState<string>("");
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setTodayIso(getTodayUtcIso());
+  }, []);
 
   useEffect(() => {
     setViewYear(parsed.year);
@@ -112,11 +122,6 @@ export function MissionDatePicker({ value, onChange }: MissionDatePickerProps) {
     setViewMonth(nextMonth);
     setViewYear(nextYear);
   };
-
-  const todayIso = useMemo(() => {
-    const now = new Date();
-    return formatIsoDate(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  }, []);
 
   return (
     <div ref={containerRef} className="relative w-full">
@@ -189,7 +194,7 @@ export function MissionDatePicker({ value, onChange }: MissionDatePickerProps) {
             {calendarCells.map((cell) => {
               const iso = formatIsoDate(cell.year, cell.month, cell.day);
               const isSelected = iso === value;
-              const isToday = iso === todayIso;
+              const isToday = todayIso !== "" && iso === todayIso;
 
               return (
                 <button
@@ -230,7 +235,9 @@ export function MissionDatePicker({ value, onChange }: MissionDatePickerProps) {
             <button
               type="button"
               onClick={() => {
-                onChange(todayIso);
+                const currentToday = getTodayUtcIso();
+                setTodayIso(currentToday);
+                onChange(currentToday);
                 setOpen(false);
               }}
               className="px-2 py-0.5 border border-white/45 bg-[#0C0C0C] hover:border-white text-white rounded-[2px] cursor-pointer"
