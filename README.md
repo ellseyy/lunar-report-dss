@@ -1,38 +1,85 @@
-# Lunar Global Landing Decision Support System (`lunar-report-dss`)
+# lunar-report-dss
 
-An engineering Decision Support System (DSS) for evaluating lunar landing sites across the **entire surface of the Moon** (`-90°..+90°` latitude and `-180°..+180°` longitude) tailored to the **NASA CLPS Lander** (*Commercial Lunar Payload Services*) mission profile.
+Global lunar landing-site evaluation and Decision Support System (DSS) for the **NASA CLPS Lander** (*Commercial Lunar Payload Services*) profile across `100%` of the lunar surface (`-90°..+90°` lat, `-180°..+180°` lon).
 
-The system integrates the global **NASA LRO LOLA (`LDEM_64`)** Digital Elevation Model, high-resolution polar rasters (`20 m/px` and `100 m/px`), Sun and Earth ephemeris calculations (**JPL Horizons DE440** + spherical analytical fallback), and a deterministically validated LLM synthesis pipeline with strict anti-hallucination guardrails.
+Computes deterministic terrain slope, `360°` curvature-corrected horizon masking, hourly solar/DTE visibility, and `GO / CONDITIONAL / NO-GO` verdicts from NASA LRO LOLA elevation rasters and JPL Horizons DE440 ephemerides, with an optional schema-constrained and post-validated LLM synthesis layer.
 
 ---
 
-## Key Features
+## Architecture & Data Flow
 
-* **Global Lunar Coverage (`100%` of the Surface):**
-  * **Latitudes `-81°..+90°`:** Global equirectangular `LDEM_64` elevation grid (`11520 × 5760` pixels, `32 ppd` / `~947 m/px` at the equator, elevation range from `-9,109 m` to `+10,744 m`).
-  * **South Polar Region (`-81°..-90°`):** Seamless transition to the polar stereographic `LOLA 100m/px` grid and local `20m/px` high-resolution patches (Shackleton Rim/Floor, Connecting Ridge, Malapert Massif, de Gerlache).
-* **Spherical 360° Horizon Raycasting:** Local terrain slope calculation accounting for meridian convergence $\cos(\varphi)$ and 36-azimuth raytracing corrected for lunar curvature ($R = 1,737.4\text{ km}$).
-* **Orbital Ephemeris & Earth Communications:**
-  * Live integration with **NASA JPL Horizons API (DE440)** with automatic fallback to a high-precision spherical synodic cycle (`29.53 days`) and optical Earth libration model when offline.
-  * Hourly simulation of solar illumination (accounting for the Sun's `+0.27°` upper limb) and Direct-to-Earth (**DTE**) radio line-of-sight (accounting for Earth's `+0.95°` upper limb).
-* **Fixed `CLPS Lander` Engineering Profile:**
-  * Maximum allowable touchdown tilt: **$\le 8.0^\circ$** (nominal safe threshold $\le 5.0^\circ$).
-  * Battery survival limit in continuous shadow: **$\le 36\text{ hrs}$**.
-  * Maximum continuous communications blackout before requiring an orbital relay: **$\le 24\text{ hrs}$**.
-  * Target mission window illumination: **$\ge 75\%$** (`NO-GO` threshold $< 45\%$).
-* **Anti-Hallucination LLM Pipeline:**
-  * All physical and astronomical metrics are computed deterministically in TypeScript prior to invoking the language model.
-  * A strict post-validator (`validateGeneratedReport`) verifies every number in the LLM output against raw telemetry, blocks leaked `camelCase` identifiers, prevents conflating sunlight hours with battery eclipse limits, and enforces relay rules.
+```text
+POST /api/mission-report { lat, lon, landingDate, windowDays }
+  │
+  ├──► 1. Terrain & Horizon Extraction (lunarTelemetryExtractor.ts)
+  │       ├── -81°..+90° : Global LDEM_64 Int16 grid (11520×5760, 32 ppd, ~947.6 m/px eq.)
+  │       ├── -81°..-90° : Polar stereographic LOLA 100 m/px (6080×6080) + 20 m/px patches
+  │       └── 36-azimuth spherical raycasting with lunar curvature drop d²/(2R)
+  │
+  ├──► 2. Ephemeris & Hourly Visibility Simulation
+  │       ├── Primary  : NASA JPL Horizons API (DE440)
+  │       ├── Fallback : Analytical synodic cycle (29.5306 d) + optical Earth libration
+  │       └── Limb offsets: Sun +0.27°, Earth +0.95° vs. 36-sector horizon profile
+  │
+  ├──► 3. Deterministic Scoring & Verdict (lunarMissionReport.ts)
+  │       └── Evaluates CLPS Lander thresholds → GO | CONDITIONAL | NO-GO
+  │
+  └──► 4. Narrative Synthesis & Guardrails
+          ├── OpenRouter (strict JSON Schema) → validateGeneratedReport()
+          └── Fallback: deterministic makeFallbackReport() (if no key or validation fails)
+```
+
+---
+
+## Elevation Datasets & Geospatial Model
+
+All elevation grids are stored as little-endian `Int16` binary arrays in `src/data/` and loaded lazily into memory on the server:
+
+| Dataset | Coverage | Grid / Resolution | Vertical Unit | File |
+| :--- | :--- | :--- | :--- | :--- |
+| **LOLA `LDEM64_PA_pixel_202405`** | `-90°..+90°` (used `-81°..+90°`) | `11520 × 5760` (`32 ppd`, `947.6 m/px` eq.) | `1.0 m` (`-9,109 m` .. `+10,744 m`) | `lunar-global-dem.bin` (`127 MB`) |
+| **LOLA `LDEM_80S_20MPP_ADJ`** | `-80°..-90°` South Pole | `6080 × 6080` (`100 m/px` stereographic) | `1.0 m` | `lola-80s-100m.bin` (`71 MB`) |
+| **High-Res Polar Patches** | Shackleton Rim/Floor, Malapert Massif, de Gerlache | `500 × 500` each (`20 m/px`) | `0.5 m` | `patch-*-20m.bin` (`488 KB` × 4) |
+
+### Terrain & Raycasting Details
+- **Bilinear Interpolation & Slope:** Local slope is computed via central differences with meridian convergence (`cos(φ)` clamped at `0.08` near poles) over `R = 1,737,400 m`.
+- **36-Sector Horizon Masking:** Casts rays every `10°` of azimuth (`0°..350°`), accounting for lunar curvature drop `d² / (2R)` up to `100 km` on the global grid and `1200` steps (`100 m/px`) on the South Polar grid.
+- **PSR Detection:** Flags Permanently Shadowed Regions when `|lat| >= 85.5°`, minimum horizon elevation `> 1.8°`, and elevation `< -1,500 m`.
+
+---
+
+## CLPS Lander Engineering Profile
+
+The API enforces the `clps` profile (`MISSION_PROFILES.clps` in `src/lib/lunarMissionReport.ts`):
+
+| Parameter | Nominal / Target | Limit (`CONDITIONAL`) | `NO-GO` Threshold |
+| :--- | :--- | :--- | :--- |
+| **Touchdown Slope** | `≤ 6.5°` | `≤ 8.0°` | `> 11.0°` |
+| **Solar Illumination** | `≥ 75%` | `25%..74.9%` | `< 25%` |
+| **Max Continuous Eclipse** | `≤ 36 hrs` | `> 36 hrs` | — |
+| **Direct-to-Earth (DTE)** | `≥ 60%` | `10%..59.9%` | `< 10%` |
+| **Max Continuous Blackout** | `≤ 24 hrs` | `> 24 hrs` *(requires orbital relay)* | — |
+
+---
+
+## Anti-Hallucination LLM Pipeline
+
+When `OPENROUTER_API_KEY` is configured, `POST /api/mission-report` calls OpenRouter (`google/gemini-2.5-flash` by default, `60s` timeout, `strict: true` JSON Schema) **only** to generate the plain-English engineering summary and factor cards from frozen telemetry.
+
+Every LLM response is checked by `validateGeneratedReport()` before returning to the client:
+1. **Numeric Grounding:** Rejects any numbers not traceable to the deterministic telemetry or `CLPS` profile constants.
+2. **Identifier Leakage:** Blocks leaked `camelCase` variable names or internal schema keys.
+3. **Semantic Consistency:** Catches conflation of total sunlight hours with the `36 h` battery eclipse limit, relay-requirement contradictions, and false `favorable` cards when criteria failed.
+4. **Deterministic Fallback:** If `OPENROUTER_API_KEY` is unset, the request times out, or validation fails, `makeFallbackReport()` produces a fully compliant report deterministically.
 
 ---
 
 ## Tech Stack
 
-* **Frontend & Backend:** Next.js 16 (App Router, Turbopack), React 19, TypeScript 5
-* **Styling:** Tailwind CSS 4 (high-contrast monochrome telemetry interface)
-* **Geospatial Processing (ETL):** Python 3, `uv`, `rasterio`, `numpy`
-* **LLM Synthesis:** OpenRouter API (`google/gemini-2.5-flash` with `strict: true` JSON Schema) + deterministic `makeFallbackReport`
-* **Testing:** Vitest (24 automated physical, astronomical, validator, and API integration tests)
+- **Runtime & UI:** Next.js `16.4.6` (App Router, Turbopack), React `19.3.0`, TypeScript `5`, Tailwind CSS `4.3.3`, `lucide-react`
+- **Validation:** Zod `4.6.7` + OpenRouter Structured Outputs (`strict: true`)
+- **Geospatial ETL:** Python 3, `uv`, `rasterio`, `numpy`
+- **Testing:** Vitest `5.1.0` (`24` unit & integration tests)
 
 ---
 
@@ -41,132 +88,116 @@ The system integrates the global **NASA LRO LOLA (`LDEM_64`)** Digital Elevation
 ```text
 lunar-report-dss/
 ├── scripts/
-│   └── build-global-dem.py              # Python ETL script converting NASA LDEM_64 GeoTIFF to Int16 .bin + JSON
+│   ├── build-global-dem.py              # Converts NASA LDEM_64 GeoTIFF/IMG → Int16 .bin + meta JSON
+│   ├── process_lola_tiff.py             # Processes polar LOLA GeoTIFFs into 100 m/px & 20 m/px grids
+│   ├── prepare_lola_dataset.py          # Polar dataset preparation helper
+│   └── generate_lola_json.mjs           # Generates polar JSON metadata
 ├── src/
 │   ├── app/
-│   │   ├── api/
-│   │   │   └── mission-report/
-│   │   │       └── route.ts             # POST /api/mission-report — input validation, telemetry & LLM synthesis
-│   │   ├── globals.css                  # Global Tailwind CSS styles
-│   │   ├── layout.tsx                   # Root application layout
-│   │   └── page.tsx                     # Main UI: coordinate form, global presets, history, simulation progress
+│   │   ├── api/mission-report/route.ts  # POST /api/mission-report endpoint
+│   │   ├── globals.css                  # Tailwind CSS 4 configuration & theme
+│   │   ├── layout.tsx                   # Root layout
+│   │   └── page.tsx                     # Interactive DSS UI (presets, coordinates, history, stages)
 │   ├── components/
-│   │   └── LunarMissionReport.tsx       # Report card UI: verdict, summary, solar rhythm bar, 3 metric columns, tabs
-│   ├── data/                            # Binary elevation grids & metadata (bundled via next.config.ts)
-│   │   ├── lunar-global-dem.bin         # Global LDEM_64 elevation grid (11520x5760 Int16, 126.6 MB)
-│   │   ├── lunar-global-meta.json       # Global grid metadata (resolution, min/max elevation)
-│   │   ├── lola-80s-100m.bin            # South Polar stereographic grid (100 m/px)
-│   │   ├── lola-meta.json               # Polar grid & high-resolution patch metadata
-│   │   └── patch-*.bin                  # Local 20 m/px polar patches (Shackleton, Malapert, de Gerlache)
+│   │   ├── AsciiLunarIdle.tsx           # Idle state visualization
+│   │   ├── LunarMissionReport.tsx       # Verdict banner, solar timeline bar, telemetry & tabs
+│   │   ├── MissionDatePicker.tsx        # UTC landing epoch selector
+│   │   └── TacticalDatePicker.tsx       # Calendar grid control
+│   ├── data/                            # Pre-built Int16 DEMs & JSON metadata
 │   └── lib/
-│       ├── __tests__/
-│       │   └── lunarMissionReport.test.ts  # 24 tests: geometry, poles, lunar phases, validator, API route
-│       ├── lunarMissionReport.ts        # Data schemas, CLPS Lander limits, report validator & fallback generator
-│       └── lunarTelemetryExtractor.ts   # DEM loader, bilinear interpolation, raycasting, JPL Horizons API
-├── next.config.ts                       # outputFileTracingIncludes configuration for src/data/**/*
-├── package.json                         # Dependencies and npm scripts
-├── tsconfig.json                        # TypeScript configuration
-└── vitest.config.ts                     # Vitest runner configuration
+│       ├── __tests__/lunarMissionReport.test.ts  # 24 Vitest specs
+│       ├── lunarMissionReport.ts        # Schemas, CLPS limits, validator, fallback report builder
+│       └── lunarTelemetryExtractor.ts   # DEM loader, raycasting, Horizons client, fallback ephemeris
+├── next.config.ts                       # outputFileTracingIncludes for src/data/**/*
+├── package.json
+└── vitest.config.ts
 ```
 
 ---
 
-## Quick Start (Local Development)
+## Local Setup
 
-### 1. Prerequisites
-* **Node.js** `>= 20.x`
-* **npm** `>= 10.x`
-* **Git LFS** (if binary `.bin` elevation rasters are tracked via Git LFS)
+### Prerequisites
+- **Node.js** `>= 20.x`, **npm** `>= 10.x`
+- **Git LFS** (required if `src/data/*.bin` binaries are tracked via LFS)
 
-### 2. Installation
+### Install & Run
 ```bash
 git clone <REPOSITORY_URL>
 cd lunar-report-dss
-git lfs pull   # fetch src/data/*.bin if tracked via Git LFS
+git lfs pull
 npm install
+npm run dev
 ```
+Open `http://localhost:3000`.
 
-### 3. Environment Variables
-Create a `.env.local` file in the project root:
+### Environment Variables (`.env.local`)
 ```env
-# OpenRouter API key for generating the plain-English engineering summary (LLM)
-# If omitted, the system automatically uses the deterministic makeFallbackReport template
+# Optional: enables LLM engineering narrative via OpenRouter.
+# If omitted, the deterministic makeFallbackReport() generator is used.
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Optional: override the synthesis model (defaults to google/gemini-2.5-flash)
+# Optional: override default synthesis model (default: google/gemini-2.5-flash)
 OPENROUTER_SYNTHESIS_MODEL=google/gemini-2.5-flash
 ```
 
-### 4. Run the Development Server
-```bash
-npm run dev
-```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
 ---
 
-## Rebuilding the Global DEM from Source GeoTIFF (Optional)
+## Rebuilding the Global DEM (Optional)
 
-Pre-built rasters (`src/data/lunar-global-dem.bin` and `src/data/lunar-global-meta.json`) are already included. To regenerate the global grid from a raw NASA PDS GeoTIFF (`LDEM64_PA_pixel_202405.tif`) at a custom resolution (`TARGET_PPD`), run the Python ETL script via `uv`:
+Pre-built binaries are included in `src/data/`. To regenerate `lunar-global-dem.bin` from a raw NASA PDS `LDEM_64` GeoTIFF/IMG using `uv`:
 
 ```bash
 uv run --with rasterio --with numpy python -u scripts/build-global-dem.py <path_to_LDEM64.tif>
 ```
 
-The script resamples the dataset via bilinear interpolation into a compact `Int16` binary array (`1 meter` per unit) and writes the output files to `src/data/`.
-
 ---
 
-## API Specification (`POST /api/mission-report`)
-
-The application exposes a REST endpoint for integration with external mission planning workflows.
+## API Reference: `POST /api/mission-report`
 
 ### Request (`application/json`)
 ```json
 {
   "lat": 0.67,
   "lon": 23.47,
-  "landingDate": "2026-11-18",
+  "landingDate": "2026-11-15",
   "windowDays": 14
 }
 ```
 
-| Field | Type | Range / Format | Description |
+| Field | Type | Default | Constraints |
 | :--- | :--- | :--- | :--- |
-| `lat` | `number` | `-90.0` .. `+90.0` | Selenographic latitude (`+` North, `-` South) |
-| `lon` | `number` | `-180.0` .. `+180.0` | Selenographic longitude (`+` East, `-` West) |
-| `landingDate` | `string` | `YYYY-MM-DD` (UTC) | Landing epoch date (defaults to `"2026-11-15"`) |
-| `windowDays` | `number` | Integer `1` .. `30` | Mission window duration in Earth days (defaults to `14`) |
+| `lat` | `number` | *required* | `[-90, 90]` (selenographic latitude) |
+| `lon` | `number` | *required* | `[-180, 180]` (selenographic longitude) |
+| `landingDate` | `string` | `"2026-11-15"` | `YYYY-MM-DD` (UTC) |
+| `windowDays` | `number` | `14` | Integer `[1, 30]` Earth days |
 
 ### Response (`200 OK`)
-Returns `{ "report": LunarMissionReportData }`, containing:
-* `verdict`: `"GO" | "CONDITIONAL" | "NO-GO"`
-* `headline`: Site title with matched catalog landmark (e.g., `MARE TRANQUILLITATIS (APOLLO 11)`) or regional sector classification
-* `summary`: Validated 4–5 sentence engineering summary
-* `sunlightTimeline`: Array of `windowDays * 24` hourly flags (`1` = sunlit, `0` = shadow)
-* `params`: Formatted telemetry values (`slope`, `elevation`, `horizon`, `sunlight`, `peakElev`, `eclipse`, `dte`, `blackout`, `psr`)
-* `favorable` & `risks`: Structured supporting factors and engineering constraints cited against NASA data sources
+Returns `{ "report": LunarMissionReportData }`:
+- `verdict`: `"GO" | "CONDITIONAL" | "NO-GO"`
+- `headline`: Matched catalog landmark (e.g. `MARE TRANQUILLITATIS (APOLLO 11)`) or regional sector
+- `summary`: Grounded engineering assessment
+- `sunlightTimeline`: `windowDays * 24` binary hourly flags (`1` = sunlit, `0` = shadow)
+- `params`: Formatted telemetry (`slope`, `elevation`, `horizon`, `sunlight`, `peakElev`, `eclipse`, `dte`, `blackout`, `psr`)
+- `favorable` & `risks`: Criteria-backed cards linked to NASA source IDs
 
-### Error Codes
-* `400 INVALID_JSON` — Malformed request payload
-* `400 INVALID_LATITUDE_GLOBAL_RANGE` — Latitude outside `[-90, 90]`
-* `400 INVALID_LONGITUDE_RANGE` — Longitude outside `[-180, 180]`
+### Error Responses
+- `400 INVALID_JSON` — Malformed JSON payload
+- `400 INVALID_LATITUDE_GLOBAL_RANGE` — `lat` missing, non-finite, or outside `[-90, 90]`
+- `400 INVALID_LONGITUDE_RANGE` — `lon` missing, non-finite, or outside `[-180, 180]`
 
 ---
 
 ## Testing & Production Build
 
-### Run Automated Tests (24 Vitest Specs)
-Validates historic landing sites (`Apollo 11`, `Apollo 17`, `Chang'e-4`, `Peary`, `Shackleton`), polar singularities (`±90°`), the `-81°` grid seam, the `±180°` date line, lunar phases, the anti-hallucination validator, and the API route:
 ```bash
-npx vitest run
-```
+# Run all 24 Vitest tests (historic sites, ±90° poles, ±180° seam, phases, validator, API route)
+npm test
 
-### Build & Run Production Server
-```bash
+# Lint & production build
+npm run lint
 npm run build
 npm run start
 ```
 
-> **Deployment Note (Vercel / Docker):**
-> `next.config.ts` configures `outputFileTracingIncludes: { "/api/mission-report": ["./src/data/**/*"] }` so Next.js bundles `src/data/*.bin` into the serverless/server build. When deploying via GitHub, ensure binary rasters are tracked via **Git LFS** (with Git LFS enabled in your hosting provider settings) and `OPENROUTER_API_KEY` is set in environment variables.
+> **Deployment Note:** `next.config.ts` sets `outputFileTracingIncludes: { "/api/mission-report": ["./src/data/**/*"] }` so Next.js traces and bundles the `~198 MB` of binary elevation grids into the `/api/mission-report` server bundle. Ensure your deployment target supports the bundle size and has Git LFS enabled if binaries are stored in LFS.
